@@ -1,18 +1,45 @@
 module SpuriousCoexpression
 
-export compute_relative_spurious_coexpression
+export spuriously_coexpressed_gene_pairs, coexpression_dataset_from_h5ad, relative_coexpression
 
 using NearestNeighbors, CSV, DataFrames
 using SparseArrays: SparseMatrixCSC, SparseVector, sparse
 using ArgParse
 using Distributions: Multinomial
 using Statistics: mean
+using Muon: readh5ad
 
 
 struct Transcript
     x::Float32
     y::Float32
     gene::Int
+end
+
+struct CoexpressionDataset
+    CC::Matrix{Float32} # conditional coexpression matrix
+    genes::Vector{String}
+end
+
+
+function coexpression_dataset_from_h5ad(
+        filename::String;
+        positivity_cutoff::Number=1,
+        min_positivity_rate::Number=0.01,
+        min_cond_coex::Number=0.05,
+        target_count::Int=40)
+
+    adata = readh5ad(filename)
+    X = SparseMatrixCSC(adata.X)
+    genes = Vector{String}(adata.var_names)
+
+    mask = Array(sum(X, dims=2))[:,1] .>= target_count
+    X = downsample_counts(X[mask,:], target_count)
+
+    pos, pos_rate = counts_to_positivity(X, positivity_cutoff, min_positivity_rate)
+    CC = conditional_coexpression(pos, min_cond_coex)
+
+    return CoexpressionDataset(CC, genes)
 end
 
 
@@ -175,8 +202,16 @@ function censored_log_ratio(pos_rate_nuc, pos_rate_nucex, CCnuc, CCnucex, min_po
 	return CCdiff
 end
 
-# TODO: Should we have default values for a lot of this? Or make keyword arguments.
-function compute_relative_spurious_coexpression(
+
+struct ConditionalCoexpression
+    CC::Matrix{Float32}
+    genes::Vector{String}
+end
+
+
+# Read nuclear segmentation from a trnscript table, return a set of spuriously
+# coexpressed gene pairs, and the coexpression matrix for the nuclear data.
+function spuriously_coexpressed_gene_pairs(
         filename::String,
         x_column::String,
         y_column::String,
@@ -189,8 +224,9 @@ function compute_relative_spurious_coexpression(
         positivity_cutoff::Number=1,
         min_positivity_rate::Number=0.01,
         min_cond_coex::Number=0.05,
-        mincount::Int=40,
-        minposrate::Number=0.05)
+        target_count::Int=40,
+        minposrate::Number=0.05,
+        cc_cutoff::Number=1.0)
 
     transcripts, genes, nuc_assignments = read_transcripts(
         filename, x_column, y_column, gene_column, cell_column, unassigned_value, compartment_column, nuclear_value)
@@ -202,10 +238,10 @@ function compute_relative_spurious_coexpression(
     nucex_assignments = compute_nuclear_expansion_assignments(transcripts, centroids, Float32(radius))
     Xnucex = count_matrix_from_assignments(transcripts, genes, nucex_assignments)
 
-    mask = (Array(sum(Xnuc, dims=2))[:,1] .>= mincount) .& (Array(sum(Xnucex, dims=2))[:,1] .>= mincount)
+    mask = (Array(sum(Xnuc, dims=2))[:,1] .>= target_count) .& (Array(sum(Xnucex, dims=2))[:,1] .>= target_count)
 
-    Xnuc = downsample_counts(Xnuc[mask,:], mincount)
-    Xnucex = downsample_counts(Xnucex[mask,:], mincount)
+    Xnuc = downsample_counts(Xnuc[mask,:], target_count)
+    Xnucex = downsample_counts(Xnucex[mask,:], target_count)
 
     pos_nuc, pos_rate_nuc = counts_to_positivity(Xnuc, positivity_cutoff, min_positivity_rate)
     pos_nucex, pos_rate_nucex = counts_to_positivity(Xnucex, positivity_cutoff, min_positivity_rate)
@@ -216,12 +252,36 @@ function compute_relative_spurious_coexpression(
     CCdiff = censored_log_ratio(pos_rate_nuc, pos_rate_nucex, CCnuc, CCnucex, Float32(minposrate))
     @assert all(isfinite.(CCdiff))
 
-    CCranked = sort(reshape([(CCdiff[i, j], genes[i], genes[j]) for i in 1:size(CCdiff, 1), j in 1:size(CCdiff, 2)], :), rev=true)
+    spurious_gene_pairs = Tuple{String, String}[]
+    for (i, a) in enumerate(genes), (j, b) in enumerate(genes)
+        if CCdiff[i, j] >= cc_cutoff
+            push!(spurious_gene_pairs, (a, b))
+        end
+    end
 
-    @show CCranked[1:40]
+    cc_nuc = CoexpressionDataset(CCnuc, genes)
 
-    # TODO: What exactly do we want to report? We want to know the gene pairs
-    # and also be able to easily compute median relatives spurious coexpression.
+    return cc_nuc, spurious_gene_pairs
+end
+
+
+function relative_coexpression(cc_nuc::CoexpressionDataset, cc::CoexpressionDataset, gene_pairs::Vector{Tuple{String, String}})
+    rel_ccs = Float32[]
+    for (a, b) in gene_pairs
+        i = findfirst(isequal(a), cc_nuc.genes)
+        j = findfirst(isequal(b), cc_nuc.genes)
+        cc_nuc_ij = cc_nuc.CC[i, j]
+
+        i = findfirst(isequal(a), cc.genes)
+        j = findfirst(isequal(b), cc.genes)
+        cc_ij = cc.CC[i, j]
+
+        rel_cc = log2(cc_ij / cc_nuc_ij)
+
+        push!(rel_ccs, rel_cc)
+    end
+
+    return rel_ccs
 end
 
 end # module SpuriousCoexpression
