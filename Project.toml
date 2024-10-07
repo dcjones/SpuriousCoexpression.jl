@@ -1,0 +1,13 @@
+name = "SpuriousCoexpression"
+uuid = "4205802e-4261-4e3a-8b49-246b18c01c66"
+authors = ["Daniel C. Jones <djones3@fredhutch.org>"]
+version = "0.1.0"
+
+[deps]
+ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+NearestNeighbors = "b8a86587-4115-5ab1-83bc-aa920d37bbce"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
